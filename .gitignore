@@ -1,0 +1,4 @@
+# Ambiente virtual
+.venv/
+# Variáveis de ambiente
+antecipeai.env
