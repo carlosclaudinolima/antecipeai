@@ -1,43 +1,56 @@
-# =============================================================================
-# Configuração do projeto AntecipeAI - Enterprise Challenge FIAP x Locaweb
-# =============================================================================
-# Ajuste estes valores conforme o ambiente. O objetivo deste arquivo é permitir
-# migrar o projeto do Databricks Free (tudo managed, dentro do próprio metastore)
-# para um ambiente de nuvem (S3/AWS, ADLS/Azure, GCS/GCP, Object Storage/OCI)
-# trocando SOMENTE estas variáveis — os notebooks não devem precisar de
-# alteração de código para essa migração.
+# Definição do Job "AntecipeAI - Pipeline ETL" publicado pelo Asset Bundle.
+#
+# Roda em compute SERVERLESS de propósito: o Databricks Free Edition só
+# oferece serverless (sem cluster clássico) — por isso nenhuma task abaixo
+# define job_clusters/new_cluster. Ao omitir o compute, o Databricks usa
+# serverless automaticamente.
+#
+# ATENÇÃO — pipeline ainda não roda 100% desatendido de ponta a ponta:
+#   1) a task "bootstrap_landing_convert_xlsx" depende de alguém ter subido
+#      manualmente o LW-DATASET.xlsx no Volume antes (Catalog Explorer →
+#      Upload) — não é acionado por este Job sozinho.
+#   2) a ingestão do .xlsx em si ainda está pendente da decisão sobre
+#      spark-excel vs. limitação do compute serverless (ver README, seção
+#      "Desafios técnicos enfrentados").
+# Isso não trava o deploy do bundle — só significa que "Run now" no Job só
+# vai completar com sucesso depois desses dois pontos resolvidos.
 
-# --- Identificação do catalog/schemas no Unity Catalog ---
-ANTECIPEAI_CATALOG=antecipeai
-ANTECIPEAI_SCHEMA_LANDING=landing
-ANTECIPEAI_SCHEMA_BRONZE=bronze
-ANTECIPEAI_SCHEMA_SILVER=silver
-ANTECIPEAI_SCHEMA_GOLD=gold
-ANTECIPEAI_VOLUME_RAW=raw
+resources:
+  jobs:
+    antecipeai_pipeline:
+      name: "AntecipeAI - Pipeline ETL (Bronze -> Silver -> Gold)"
 
-# --- Tipo de armazenamento das tabelas/volumes ---
-# MANAGED  = storage gerenciado pelo próprio metastore do Databricks (default do
-#            Databricks Free). Usar nesta fase do projeto acadêmico (custo zero).
-# EXTERNAL = aponta para um storage externo já existente (bucket S3, container
-#            ADLS, bucket GCS, bucket OCI...). Usar quando o projeto for
-#            aprovado e migrar para produção.
-ANTECIPEAI_TABLE_TYPE=MANAGED
+      tasks:
+        - task_key: setup_catalog_schemas
+          notebook_task:
+            notebook_path: ../notebooks/01_setup_catalog_schemas.ipynb
 
-# --- Storage root (obrigatório somente se ANTECIPEAI_TABLE_TYPE=EXTERNAL) ---
-# Precisa ser um External Location já configurado no Unity Catalog, com as
-# credenciais de storage credential correspondentes já criadas pelo admin do
-# workspace. Exemplos de formato esperado por provedor:
-#   AWS:   s3://antecipeai-datalake/prod/
-#   Azure: abfss://[email protected]/prod/
-#   GCP:   gs://antecipeai-datalake/prod/
-#   OCI:   oci://[email protected]/prod/
-ANTECIPEAI_STORAGE_ROOT=
+        - task_key: bootstrap_landing_convert_xlsx
+          depends_on:
+            - task_key: setup_catalog_schemas
+          notebook_task:
+            notebook_path: ../notebooks/02_bootstrap_landing_convert_xlsx.ipynb
 
-# --- Provedor de nuvem alvo (apenas informativo/log, não usado em lógica) ---
-# Valores aceitos: NONE | AWS | AZURE | GCP | OCI
-ANTECIPEAI_CLOUD_PROVIDER=NONE
+        - task_key: bronze_ingestion_autoloader
+          depends_on:
+            - task_key: bootstrap_landing_convert_xlsx
+          notebook_task:
+            notebook_path: ../notebooks/03_bronze_ingestion_autoloader.ipynb
 
-# --- Cluster / compute ---
-# Usado só como documentação do que foi usado nesta fase, não é lido pelos
-# notebooks (o compute é escolhido na UI do Databricks, não via .env).
-ANTECIPEAI_COMPUTE_MODE=SERVERLESS_FREE
+        - task_key: exploratory_analysis
+          depends_on:
+            - task_key: bronze_ingestion_autoloader
+          notebook_task:
+            notebook_path: ../notebooks/04_exploratory_analysis.ipynb
+
+        - task_key: silver_transform
+          depends_on:
+            - task_key: exploratory_analysis
+          notebook_task:
+            notebook_path: ../notebooks/05_silver_transform.ipynb
+
+        - task_key: gold_datamart
+          depends_on:
+            - task_key: silver_transform
+          notebook_task:
+            notebook_path: ../notebooks/06_gold_datamart.ipynb
