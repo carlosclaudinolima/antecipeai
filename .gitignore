@@ -1,4 +1,18 @@
-# Ambiente virtual
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Databricks Asset Bundles - cache/estado local de deploy
+.databricks/
+.databricks-bundle-cache/
+
+# Ambiente local
 .venv/
-# Variáveis de ambiente
-antecipeai.env
+venv/
+.DS_Store
+
+# IMPORTANTE: config/antecipeai.env é versionado de propósito — não contém
+# nenhuma credencial (ANTECIPEAI_STORAGE_ROOT é só um path, sem chave de
+# acesso embutida). Se algum dia esse arquivo passar a guardar segredo de
+# verdade, ele precisa sair daqui do repo e virar GitHub Secret.

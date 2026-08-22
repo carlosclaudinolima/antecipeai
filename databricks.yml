@@ -1,0 +1,43 @@
+# Databricks Asset Bundle — AntecipeAI
+#
+# Referência: https://docs.databricks.com/dev-tools/bundles/index.html
+#
+# O bundle empacota notebooks + a definição do Job (resources/antecipeai_job.yml)
+# e publica tudo no workspace configurado via variáveis de ambiente
+# DATABRICKS_HOST / DATABRICKS_TOKEN (ou um profile local do Databricks CLI).
+#
+# Path de destino no workspace: NÃO é fixo no código. Usamos a variável de
+# template `${workspace.current_user.userName}`, que o Databricks CLI resolve
+# automaticamente a partir de quem está autenticado no deploy — ninguém
+# precisa descobrir/hardcodar o próprio path do workspace.
+
+bundle:
+  name: antecipeai
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: "Catalog do Unity Catalog usado pelo projeto (deve bater com ANTECIPEAI_CATALOG no .env)"
+    default: antecipeai
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      # Cada pessoa que rodar `databricks bundle deploy` localmente publica
+      # na própria pasta de usuário — sem colidir com o notebook de outro
+      # colega do grupo, mesmo trabalhando todos no mesmo workspace Free.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+  prod:
+    mode: production
+    workspace:
+      # Alvo usado pelo deploy automático via GitHub Actions (branch main).
+      # Continua resolvendo pelo usuário do token/Service Principal usado no
+      # secret DATABRICKS_TOKEN — não precisa saber o path de antemão.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      user_name: ${workspace.current_user.userName}
