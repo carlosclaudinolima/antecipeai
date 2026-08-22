@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -145,3 +145,30 @@ jobs:
           else
             echo "[OK] Nenhum padrão de segredo óbvio encontrado."
           fi
+
+  deploy:
+    name: Deploy do Asset Bundle no Databricks (CD)
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    # Só publica em push direto na main, e só depois do job de lint/validação
+    # passar — PR e a branch develop nunca disparam deploy.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Deploy do bundle (target prod)
+        # DATABRICKS_HOST e DATABRICKS_TOKEN precisam existir como Secrets do
+        # repositório (Settings > Secrets and variables > Actions) para este
+        # step funcionar. Até esses secrets serem configurados, este job vai
+        # falhar aqui — isso é esperado, não é bug do workflow. O restante do
+        # pipeline (lint/validação) continua funcionando normalmente mesmo
+        # sem os secrets configurados.
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: databricks bundle deploy --target prod
