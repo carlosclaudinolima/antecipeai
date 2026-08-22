@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-and-validate:
+    name: Lint & Validação Estática
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências de lint
+        run: pip install flake8 nbformat
+
+      - name: Verificar sintaxe dos notebooks (.ipynb)
+        # Os notebooks são .ipynb — não são Python puro (é JSON), e algumas
+        # células têm magics do Databricks (%run, %pip) que não são sintaxe
+        # Python válida fora do IPython. Este script lê cada notebook,
+        # comenta as linhas de magic e valida a sintaxe de cada célula de
+        # código com ast.parse antes do deploy.
+        run: |
+          python - <<'EOF'
+          import ast
+          import sys
+          from pathlib import Path
+
+          import nbformat
+
+          errors = []
+          for nb_path in sorted(Path("notebooks").glob("*.ipynb")):
+              nb = nbformat.read(nb_path, as_version=4)
+              nbformat.validate(nb)
+              for i, cell in enumerate(nb.cells):
+                  if cell.cell_type != "code":
+                      continue
+                  lines = [
+                      f"# {l}" if l.strip().startswith("%") else l
+                      for l in cell.source.split("\n")
+                  ]
+                  try:
+                      ast.parse("\n".join(lines))
+                  except SyntaxError as e:
+                      errors.append((nb_path.name, i, str(e)))
+
+          if errors:
+              for nb, i, e in errors:
+                  print(f"[FALHA] {nb} célula {i}: {e}")
+              sys.exit(1)
+          print("Todos os notebooks .ipynb sao JSON valido e compilam sem erro de sintaxe.")
+          EOF
+
+      - name: Extrair código dos notebooks para lint
+        run: |
+          mkdir -p .ci_extracted
+          python - <<'EOF'
+          from pathlib import Path
+          import nbformat
+
+          out_dir = Path(".ci_extracted")
+          for nb_path in sorted(Path("notebooks").glob("*.ipynb")):
+              nb = nbformat.read(nb_path, as_version=4)
+              lines = []
+              for cell in nb.cells:
+                  if cell.cell_type != "code":
+                      continue
+                  for l in cell.source.split("\n"):
+                      lines.append(f"# {l}" if l.strip().startswith("%") else l)
+                  lines.append("")
+              (out_dir / f"{nb_path.stem}.py").write_text("\n".join(lines), encoding="utf-8")
+          EOF
+
+      - name: Lint com flake8 (regras adaptadas a notebooks Databricks)
+        # F821 (nome indefinido) é ignorado de propósito: spark, dbutils e
+        # display são injetados automaticamente pelo runtime do Databricks e
+        # não existem neste ambiente de CI.
+        # E302 é ignorado porque a extração concatena células de notebook
+        # separadas por 1 linha em branco (limite natural de célula), não
+        # necessariamente as 2 linhas exigidas pela PEP8 antes de def/class.
+        run: |
+          flake8 .ci_extracted/ \
+            --max-line-length=120 \
+            --extend-ignore=E501,E402,F821,E731,E302 \
+            --exclude=__pycache__
+
+      - name: Validar estrutura do config/*.env
+        run: |
+          python - <<'EOF'
+          import sys
+          from pathlib import Path
+
+          required_keys = {
+              "ANTECIPEAI_CATALOG",
+              "ANTECIPEAI_SCHEMA_LANDING",
+              "ANTECIPEAI_SCHEMA_BRONZE",
+              "ANTECIPEAI_SCHEMA_SILVER",
+              "ANTECIPEAI_SCHEMA_GOLD",
+              "ANTECIPEAI_VOLUME_RAW",
+              "ANTECIPEAI_TABLE_TYPE",
+              "ANTECIPEAI_STORAGE_ROOT",
+              "ANTECIPEAI_CLOUD_PROVIDER",
+          }
+
+          env_files = list(Path("config").glob("*.env"))
+          if not env_files:
+              print("Nenhum arquivo .env encontrado em config/")
+              sys.exit(1)
+
+          for env_file in env_files:
+              found_keys = set()
+              for line in env_file.read_text(encoding="utf-8").splitlines():
+                  line = line.strip()
+                  if not line or line.startswith("#") or "=" not in line:
+                      continue
+                  key = line.split("=", 1)[0].strip()
+                  found_keys.add(key)
+
+              missing = required_keys - found_keys
+              if missing:
+                  print(f"[FALHA] {env_file}: chaves obrigatórias ausentes: {missing}")
+                  sys.exit(1)
+              print(f"[OK] {env_file}: todas as chaves obrigatórias presentes.")
+          EOF
+
+      - name: Checagem básica de segredos hardcoded
+        # Checagem simples de padrões comuns de credencial vazada. Não
+        # substitui uma ferramenta dedicada (ex.: gitleaks/truffleHog), mas
+        # pega os erros mais óbvios antes de virar hábito no time.
+        run: |
+          if grep -RInE "(AKIA[0-9A-Z]{16}|aws_secret_access_key\s*=\s*['\"]?[A-Za-z0-9/+=]{20,}|(?i)password\s*=\s*['\"][^'\"]{3,}['\"]|(?i)dapi[0-9a-f]{32})" \
+            --include="*.py" --include="*.ipynb" --include="*.env" \
+            --exclude-dir=".git" . ; then
+            echo "[FALHA] Possível segredo hardcoded encontrado — revise antes do merge."
+            exit 1
+          else
+            echo "[OK] Nenhum padrão de segredo óbvio encontrado."
+          fi
