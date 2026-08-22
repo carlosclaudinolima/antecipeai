@@ -112,7 +112,7 @@ A decisão de modelagem partiu de um critério não negociável: **tudo precisa 
 
 ## 🔍 Principais descobertas da análise exploratória
 
-A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.py)) não foi só checagem de nulos — ela mudou decisões reais de arquitetura:
+A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.ipynb)) não foi só checagem de nulos — ela mudou decisões reais de arquitetura:
 
 - **Mudança de regime no volume de incidentes**: o volume bruto salta ~6x em setembro/2025, mas isso é inteiramente causado por uma ferramenta de monitoramento automatizado (tickets auto-fechados, sem intervenção humana), não por variação operacional real. O volume que **entra no KPI** — o que de fato importa para o desafio — é estável desde janeiro/2025. Essa descoberta definiu qual série o modelo deve prever.
 - **151 incidentes elegíveis para o KPI mas marcados como fora dele**, concentrados em dezembro/2025 — inconsistência real da fonte, documentada e tratada como flag, não corrigida "por baixo dos panos".
@@ -127,13 +127,13 @@ A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.py
 ├── config/
 │   └── antecipeai.env                # Configuração central (catalog, schemas, MANAGED/EXTERNAL)
 ├── notebooks/
-│   ├── 00_config.py                  # Carrega o .env — importado via %run pelos demais
-│   ├── 01_setup_catalog_schemas.py   # Cria catalog, schemas e Volume de staging
-│   ├── 02_bootstrap_landing_convert_xlsx.py
-│   ├── 03_bronze_ingestion_autoloader.py
-│   ├── 04_exploratory_analysis.py    # EDA completa, evidência das decisões de arquitetura
-│   ├── 05_silver_transform.py        # Limpeza, regras de negócio, features de série temporal
-│   └── 06_gold_datamart.py           # Star Schema (dimensões + fato)
+│   ├── 00_config.ipynb                  # Carrega o .env — importado via %run pelos demais
+│   ├── 01_setup_catalog_schemas.ipynb   # Cria catalog, schemas e Volume de staging
+│   ├── 02_bootstrap_landing_convert_xlsx.ipynb
+│   ├── 03_bronze_ingestion_autoloader.ipynb
+│   ├── 04_exploratory_analysis.ipynb    # EDA completa, evidência das decisões de arquitetura
+│   ├── 05_silver_transform.ipynb        # Limpeza, regras de negócio, features de série temporal
+│   └── 06_gold_datamart.ipynb           # Star Schema (dimensões + fato)
 ├── LICENSE
 └── README.md
 ```
@@ -161,7 +161,7 @@ Migrar da fase acadêmica (Databricks Free, tudo `MANAGED`) para produção é u
 
 O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda em todo push/PR para `main`/`develop`:
 
-- ✅ Compila todos os notebooks (`.py` em formato Databricks source) para pegar erro de sintaxe antes do deploy.
+- ✅ Compila todos os notebooks (`.ipynb`) e valida a sintaxe de cada célula de código para pegar erro de sintaxe antes do deploy.
 - ✅ Lint com `flake8` (com exceções deliberadas para `spark`/`dbutils`/`display`, injetados pelo runtime do Databricks e inexistentes no ambiente de CI).
 - ✅ Valida que `config/*.env` tem todas as chaves obrigatórias.
 - ✅ Checagem básica de segredos hardcoded antes do merge.
