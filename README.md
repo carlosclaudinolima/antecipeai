@@ -123,11 +123,14 @@ A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.ip
 
 ```
 .
-├── .github/workflows/ci.yml          # Lint, validação de sintaxe e config
+├── .github/workflows/ci.yml          # CI (lint/validação) + CD (deploy do bundle)
+├── databricks.yml                    # Databricks Asset Bundle (config principal)
+├── resources/
+│   └── antecipeai_job.yml            # Definição do Job (pipeline ETL encadeado)
 ├── config/
 │   └── antecipeai.env                # Configuração central (catalog, schemas, MANAGED/EXTERNAL)
 ├── notebooks/
-│   ├── 00_config.ipynb                  # Carrega o .env — importado via %run pelos demais
+│   ├── 00_config.ipynb               # Carrega o .env — importado via %run pelos demais
 │   ├── 01_setup_catalog_schemas.ipynb   # Cria catalog, schemas e Volume de staging
 │   ├── 02_bootstrap_landing_convert_xlsx.ipynb
 │   ├── 03_bronze_ingestion_autoloader.ipynb
@@ -159,12 +162,26 @@ Migrar da fase acadêmica (Databricks Free, tudo `MANAGED`) para produção é u
 
 ## 🧪 CI/CD
 
-O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda em todo push/PR para `main`/`develop`:
+O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) tem dois jobs encadeados:
 
+**CI — `lint-and-validate`** (roda em todo push/PR para `main`/`develop`):
 - ✅ Compila todos os notebooks (`.ipynb`) e valida a sintaxe de cada célula de código para pegar erro de sintaxe antes do deploy.
 - ✅ Lint com `flake8` (com exceções deliberadas para `spark`/`dbutils`/`display`, injetados pelo runtime do Databricks e inexistentes no ambiente de CI).
 - ✅ Valida que `config/*.env` tem todas as chaves obrigatórias.
 - ✅ Checagem básica de segredos hardcoded antes do merge.
+
+**CD — `deploy`** (só em push direto na `main`, só se o CI passar):
+- 🚀 Publica o [Databricks Asset Bundle](databricks.yml) no workspace via `databricks bundle deploy --target prod`.
+- O bundle sincroniza `notebooks/` + `config/` para o workspace e publica o Job `AntecipeAI - Pipeline ETL` (definido em [`resources/antecipeai_job.yml`](resources/antecipeai_job.yml)), que encadeia as 6 etapas do pipeline como tasks sequenciais.
+- Exige os secrets `DATABRICKS_HOST` e `DATABRICKS_TOKEN` configurados no repositório (Settings → Secrets and variables → Actions) — sem eles, só o CI roda, o job de deploy falha isoladamente sem afetar a validação.
+- O path de publicação no workspace **não é fixo no código** — o bundle resolve automaticamente a partir de quem está autenticado (`${workspace.current_user.userName}`), então não é preciso descobrir o path do workspace de ninguém de antemão.
+
+Para rodar o deploy manualmente do seu próprio computador (sem depender do GitHub Actions):
+
+```bash
+databricks bundle validate   # confere a sintaxe do bundle
+databricks bundle deploy --target dev
+```
 
 ## ⚠️ Desafios técnicos enfrentados
 
@@ -180,6 +197,8 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 - [x] Camada Silver com regras de negócio validadas e flags de qualidade de dados
 - [x] Datamart Gold em Star Schema
 - [x] CI básico no GitHub Actions
+- [x] CD via Databricks Asset Bundles (deploy automático na `main`)
+- [ ] Configurar secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` no repositório para o CD publicar de verdade
 - [ ] Resolver ingestão do `.xlsx` compatível com cluster (spark-excel em ambiente com suporte a bibliotecas Maven)
 - [ ] Notebook de treino do modelo de previsão (SparkXGBoost / MLlib GBTRegressor)
 - [ ] Avaliação de modelo (MAE/RMSE por segmento) e registro de experimentos (MLflow)
