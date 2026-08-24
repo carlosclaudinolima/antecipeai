@@ -32,6 +32,15 @@ O desafio proposto pela Locaweb no Enterprise Challenge foi transformar esse his
 
 O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta — da ingestão bruta ao datamart analítico — desenhado para alimentar modelos de previsão de volume de incidentes e dashboards executivos de risco operacional.
 
+## 📊 Fontes de dados
+
+| Fonte | Tipo | Descrição | Volume / cobertura | Licença | Onde entra no pipeline |
+|---|---|---|---|---|---|
+| **`LW-DATASET.xlsx`** | Privada, fornecida pela Locaweb | Extração do sistema ITSM de gestão de incidentes de TI da Locaweb — a base de todo o projeto | 122.543 registros, 19 colunas, período de 02/01/2023 a 31/12/2025 | Uso restrito ao Enterprise Challenge FIAP × Locaweb — não redistribuível | `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` |
+| **[`holidays`](https://github.com/vacanza/holidays) (PyPI)** | Pública, open-source | Biblioteca Python que calcula programaticamente o calendário de feriados nacionais/federais do Brasil, por ano — usada para enriquecer a dimensão de calendário com `is_feriado`/`nome_feriado` | 28 feriados nacionais no período 2023-2025 (**limitação:** só federais — feriados municipais/estaduais não são cobertos, ficam como trabalho futuro de importação manual) | MIT License, mantida pelo time [Vacanza](https://github.com/vacanza/holidays) | `05_silver_transform` (versão fixada: `holidays==0.103`) |
+
+O uso do `holidays` como fonte de enriquecimento segue orientação explícita do próprio material da Locaweb para o desafio: *"sinta-se à vontade em incrementar suas análises utilizando outras fontes, desde que sejam públicas e fidedignas"*.
+
 ## ✨ Principais características
 
 - **Arquitetura Lakehouse Medallion** (landing → bronze → silver → gold) 100% sobre Delta Lake e Unity Catalog.
