@@ -32,6 +32,16 @@ O desafio proposto pela Locaweb no Enterprise Challenge foi transformar esse his
 
 O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta — da ingestão bruta ao datamart analítico — desenhado para alimentar modelos de previsão de volume de incidentes e dashboards executivos de risco operacional.
 
+## ✨ Principais características
+
+- **Arquitetura Lakehouse Medallion** (landing → bronze → silver → gold) 100% sobre Delta Lake e Unity Catalog.
+- **Ingestão incremental** via Databricks Auto Loader, com schema evolution automático.
+- **Configuração cloud-agnostic**: um único arquivo `.env` decide se as tabelas são `MANAGED` (Databricks Free, storage do metastore) ou `EXTERNAL` (apontando para S3, ADLS, GCS ou OCI Object Storage) — migrar de ambiente acadêmico para produção não exige reescrever notebook nenhum.
+- **Múltiplas tabelas de features na Silver**, desacopladas da base tratada — permite treinar modelos com recortes diferentes (produto, categoria, prioridade, e extensível a outros) sem duplicar lógica de limpeza.
+- **Star Schema na Gold**, pronto para consumo direto via Power BI (DirectQuery) ou Databricks SQL.
+- **Toda decisão de modelagem escolhida por compatibilidade real com processamento distribuído** — nada de bibliotecas single-node escondidas atrás de um cluster (veja a seção [Modelos de ML](#-modelos-de-ml)).
+- **CI leve no GitHub Actions**: valida sintaxe dos notebooks, lint, integridade da configuração e checagem básica de segredos em cada push/PR.
+
 ## 📊 Fontes de dados
 
 | Fonte | Tipo | Descrição | Volume / cobertura | Licença | Onde entra no pipeline |
@@ -40,16 +50,6 @@ O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta —
 | **[`holidays`](https://github.com/vacanza/holidays) (PyPI)** | Pública, open-source | Biblioteca Python que calcula programaticamente o calendário de feriados nacionais/federais do Brasil, por ano — usada para enriquecer a dimensão de calendário com `is_feriado`/`nome_feriado` | 28 feriados nacionais no período 2023-2025 (**limitação:** só federais — feriados municipais/estaduais não são cobertos, ficam como trabalho futuro de importação manual) | MIT License, mantida pelo time [Vacanza](https://github.com/vacanza/holidays) | `05_silver_transform` (versão fixada: `holidays==0.103`) |
 
 O uso do `holidays` como fonte de enriquecimento segue orientação explícita do próprio material da Locaweb para o desafio: *"sinta-se à vontade em incrementar suas análises utilizando outras fontes, desde que sejam públicas e fidedignas"*.
-
-## ✨ Principais características
-
-- **Arquitetura Lakehouse Medallion** (landing → bronze → silver → gold) 100% sobre Delta Lake e Unity Catalog.
-- **Ingestão incremental** via Databricks Auto Loader, com schema evolution automático.
-- **Configuração cloud-agnostic**: um único arquivo `.env` decide se as tabelas são `MANAGED` (Databricks Free, storage do metastore) ou `EXTERNAL` (apontando para S3, ADLS, GCS ou OCI Object Storage) — migrar de ambiente acadêmico para produção não exige reescrever notebook nenhum.
-- **Múltiplas tabelas de features na Silver**, desacopladas da base tratada — permite treinar modelos com recortes diferentes (produto, categoria, e extensível a outros) sem duplicar lógica de limpeza.
-- **Star Schema na Gold**, pronto para consumo direto via Power BI (DirectQuery) ou Databricks SQL.
-- **Toda decisão de modelagem escolhida por compatibilidade real com processamento distribuído** — nada de bibliotecas single-node escondidas atrás de um cluster (veja a seção [Modelos de ML](#-modelos-de-ml)).
-- **CI leve no GitHub Actions**: valida sintaxe dos notebooks, lint, integridade da configuração e checagem básica de segredos em cada push/PR.
 
 ## 🏗️ Arquitetura
 
@@ -65,15 +65,19 @@ flowchart LR
 
     subgraph Silver["🥈 Silver"]
         S1["silver.incidentes_tratados"]
-        S2["silver.features_calendario"]
-        S3["silver.features_series_produto"]
-        S4["silver.features_series_categoria"]
+        S2["silver.calendario_feriados<br/>(referência, não é feature)"]
+        S3["silver.features_calendario"]
+        S4["silver.features_series_produto<br/>(+ prioridade)"]
+        S5["silver.features_series_categoria<br/>(+ prioridade)"]
+        S6["silver.features_series_prioridade"]
+        S7["silver.features_risco_ola_produto<br/>(taxa de violação)"]
+        S8["silver.features_risco_ola_equipe<br/>(taxa de violação)"]
     end
 
     subgraph Gold["🥇 Gold — Star Schema"]
         F["gold.fato_incidentes"]
-        FA["gold.fato_incidentes_diario"]
-        D1["gold.dim_data"]
+        FA["gold.fato_incidentes_diario<br/>(+ taxa_violacao_kpi)"]
+        D1["gold.dim_data<br/>(+ is_feriado/nome_feriado)"]
         D2["gold.dim_produto"]
         D3["gold.dim_categoria"]
         D4["gold.dim_equipe"]
@@ -88,10 +92,19 @@ flowchart LR
     B --> S2
     B --> S3
     B --> S4
+    B --> S5
+    B --> S6
+    B --> S7
+    B --> S8
     S1 --> F
     S1 --> FA
+    S2 --> D1
     S3 -.-> ML
     S4 -.-> ML
+    S5 -.-> ML
+    S6 -.-> ML
+    S7 -.-> ML
+    S8 -.-> ML
     F --> D1 & D2 & D3 & D4 & D5
     F --> BI
     FA --> BI
@@ -202,17 +215,19 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 
 ## 🗺️ Roadmap
 
-- [x] Ingestão Bronze com Auto Loader e metadata de rastreabilidade
-- [x] Camada Silver com regras de negócio validadas e flags de qualidade de dados
-- [x] Datamart Gold em Star Schema
-- [x] CI básico no GitHub Actions
-- [x] CD via Databricks Asset Bundles (deploy automático na `main`)
-- [ ] Configurar secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` no repositório para o CD publicar de verdade
-- [ ] Resolver ingestão do `.xlsx` compatível com cluster (spark-excel em ambiente com suporte a bibliotecas Maven)
-- [ ] Notebook de treino do modelo de previsão (SparkXGBoost / MLlib GBTRegressor)
-- [ ] Avaliação de modelo (MAE/RMSE por segmento) e registro de experimentos (MLflow)
-- [ ] Dashboard Power BI consumindo `gold.fato_incidentes_diario` via DirectQuery
-- [ ] Explicabilidade distribuída (SynapseML + LightGBM), se necessária
+- ✅ Ingestão Bronze com Auto Loader e metadata de rastreabilidade
+- ✅ Camada Silver com regras de negócio validadas e flags de qualidade de dados
+- ✅ Datamart Gold em Star Schema
+- ✅ CI básico no GitHub Actions
+- ✅ CD via Databricks Asset Bundles (deploy automático na `main`)
+- ✅ Configurar secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` no repositório para o CD publicar de verdade
+- ✅ Features de sazonalidade (feriados nacionais) e segmentação por prioridade (P2/P3) nas séries temporais
+- ✅ Risco de OLA como série preditiva (taxa de violação), não só métrica descritiva
+- ⬜ Resolver ingestão do `.xlsx` compatível com cluster (spark-excel em ambiente com suporte a bibliotecas Maven)
+- ⬜ Notebook de treino do modelo de previsão (SparkXGBoost / MLlib GBTRegressor)
+- ⬜ Avaliação de modelo (MAE/RMSE por segmento) e registro de experimentos (MLflow)
+- ⬜ Dashboard Power BI consumindo `gold.fato_incidentes_diario` via DirectQuery
+- ⬜ Explicabilidade distribuída (SynapseML + LightGBM), se necessária
 
 ## 🤝 Contribuindo
 
