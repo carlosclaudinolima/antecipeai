@@ -74,6 +74,12 @@ flowchart LR
         S8["silver.features_risco_ola_equipe<br/>(taxa de violação)"]
     end
 
+    subgraph ML["🧠 ML — Volume (notebooks 07-09)"]
+        M1["07_ml_prep<br/>(calendário + split temporal)"]
+        M2["08_train_volume<br/>(Pipeline + GBTRegressor + portão vs baseline)"]
+        M3["09_inference_gold<br/>(previsão real D+1/D+7)"]
+    end
+
     subgraph Gold["🥇 Gold — Star Schema"]
         F["gold.fato_incidentes"]
         FA["gold.fato_incidentes_diario<br/>(+ taxa_violacao_kpi)"]
@@ -82,9 +88,9 @@ flowchart LR
         D3["gold.dim_categoria"]
         D4["gold.dim_equipe"]
         D5["gold.dim_prioridade"]
+        GP["gold.previsoes_incidentes<br/>(saída do portão: modelo OU baseline)"]
     end
 
-    ML["🧠 Modelo de Previsão<br/>(SparkXGBoost / MLlib)"]
     BI["📊 Power BI / Databricks SQL"]
 
     V -->|Auto Loader| B
@@ -99,23 +105,23 @@ flowchart LR
     S1 --> F
     S1 --> FA
     S2 --> D1
-    S3 -.-> ML
-    S4 -.-> ML
-    S5 -.-> ML
-    S6 -.-> ML
-    S7 -.-> ML
-    S8 -.-> ML
+    S3 -.-> M1
+    S4 -.-> M1
+    S5 -.-> M1
+    S6 -.-> M1
+    M1 --> M2 --> M3
+    M3 --> GP
     F --> D1 & D2 & D3 & D4 & D5
     F --> BI
     FA --> BI
-    ML -.-> BI
+    GP --> BI
 ```
 
 O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverless), sem custo de infraestrutura para a fase acadêmica — e a mesma base de código é o que será promovida para produção (AWS/Azure/GCP/OCI) se o projeto for aprovado pela Locaweb, trocando apenas variáveis de configuração.
 
 ## 🧠 Modelos de ML
 
-**Status: arquitetura definida, treino em desenvolvimento.**
+**Status: previsão de volume (D+1/D+7) implementada e avaliada; risco de OLA ainda pendente.**
 
 A decisão de modelagem partiu de um critério não negociável: **tudo precisa rodar nativamente em cluster Spark**, sem gargalos de single-node escondidos atrás de uma API distribuída.
 
@@ -127,10 +133,30 @@ A decisão de modelagem partiu de um critério não negociável: **tudo precisa 
 | Abordagem adotada | Detalhes |
 |---|---|
 | **Forecasting como regressão supervisionada** | Em vez de um modelo por segmento, features de calendário + lags (1d/7d/14d) + médias móveis viram entrada de um único modelo multi-segmento (produto/categoria como feature categórica) |
-| **SparkXGBoost** (`xgboost.spark.SparkXGBRegressor`) | Treino nativamente distribuído entre os executors do cluster |
-| **MLlib** (`GBTRegressor` / `RandomForestRegressor`) | Alternativa 100% nativa do Spark, sem dependência externa |
-| **Explicabilidade via `featureImportances` (MLlib)** | Explicabilidade global nativa, sem custo computacional extra e sem sair do paradigma distribuído |
-| **SynapseML (LightGBM + SHAP distribuído)** — opcional, futuro | Caminho Spark-nativo se for necessária explicabilidade local por previsão, mantendo compatibilidade de cluster |
+| **`GBTRegressor` (MLlib)** | Estimador escolhido para a primeira versão — 100% nativo do Spark, zero dependência externa. `SparkXGBoost` documentado como alternativa de mesmo pipeline, não implementada ainda |
+| **`Pipeline` do Spark ML** (`StringIndexer` → `VectorAssembler` → `GBTRegressor`) | Ajustados juntos, de uma vez — necessário para a inferência (`09`) funcionar só com `pipeline.transform(linha_nova)`, sem depender de nenhum artefato do treino |
+| **Portão automático vs. baseline** | Nenhum modelo é gravado como previsão oficial sem antes **vencer uma baseline ingênua** (`média móvel 7 dias`) na validação — ver resultados abaixo |
+| **Explicabilidade via `featureImportances` (MLlib)** | Nativa, sem custo computacional extra — ainda não integrada a um notebook de avaliação dedicado |
+| **SynapseML (LightGBM + SHAP distribuído)** — opcional, futuro | Caminho Spark-nativo se for necessária explicabilidade local por previsão |
+
+### Resultados do portão (volume, D+1/D+7)
+
+| Tabela | Horizonte | Vencedor | MAE teste |
+|---|---|---|---|
+| produto | D+1 | baseline | 0,24 |
+| produto | D+7 | baseline | 0,28 |
+| categoria | D+1 | baseline | 0,12 |
+| categoria | D+7 | baseline | 0,13 |
+| prioridade | D+1 | **modelo** | 7,65 |
+| prioridade | D+7 | **modelo** | 8,44 |
+
+A baseline venceu em 4 de 6 combinações — não é falha do projeto, é o resultado honesto: em `produto`/`categoria`, ~89% das linhas de teste têm valor real igual a zero (série muito esparsa), e a média móvel já captura esse padrão tão bem quanto um modelo mais sofisticado consegue. O modelo só ganha espaço em `prioridade`, onde o volume é maior e há mais variação real de padrão pra aprender. Isso confirmou a necessidade do portão: sem ele, o projeto teria "empurrado" um modelo pior que uma média em 4 de 6 segmentos como se fosse a solução.
+
+⚠️ **Limite conhecido**: a validação de `prioridade` tem só 90 linhas (3 segmentos × 30 dias) — pouco para ter certeza que a vitória do modelo ali é sinal real e não ruído estatístico. Documentado, não escondido.
+
+### Sobre MAPE nesses dados
+
+Não é possível usar MAPE tradicional na maioria dos segmentos — com ~89% das linhas de teste em `produto` tendo valor real igual a zero, o MAPE fica indefinido (divisão por zero) na maior parte da base. Usamos **WAPE** (soma dos erros absolutos ÷ soma dos valores reais) como alternativa mais robusta a essa esparsidade.
 
 ## 🔍 Principais descobertas da análise exploratória
 
@@ -158,7 +184,10 @@ A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.ip
 │   ├── 03_bronze_ingestion_autoloader.ipynb
 │   ├── 04_exploratory_analysis.ipynb    # EDA completa, evidência das decisões de arquitetura
 │   ├── 05_silver_transform.ipynb        # Limpeza, regras de negócio, features de série temporal
-│   └── 06_gold_datamart.ipynb           # Star Schema (dimensões + fato)
+│   ├── 06_gold_datamart.ipynb           # Star Schema (dimensões + fato)
+│   ├── 07_ml_prep.ipynb                 # Utilitário: junta calendário + split temporal (treino/val/teste)
+│   ├── 08_train_volume.ipynb            # Treino GBTRegressor + portão automático vs. baseline
+│   └── 09_inference_gold.ipynb          # Gera previsão real (D+1/D+7) e grava em gold.previsoes_incidentes
 ├── LICENSE
 └── README.md
 ```
@@ -179,8 +208,8 @@ Migrar da fase acadêmica (Databricks Free, tudo `MANAGED`) para produção é u
 
 1. Suba a pasta do projeto (com `config/` e `notebooks/` lado a lado) para um Repo do Databricks.
 2. Execute os notebooks em ordem:
-   `01_setup_catalog_schemas` → `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` → `04_exploratory_analysis` → `05_silver_transform` → `06_gold_datamart`.
-3. `00_config` não roda sozinho — é chamado via `%run ./00_config` no início de cada notebook.
+   `01_setup_catalog_schemas` → `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` → `04_exploratory_analysis` → `05_silver_transform` → `06_gold_datamart` → `08_train_volume` → `09_inference_gold`.
+3. `00_config` e `07_ml_prep` não rodam sozinhos — são chamados via `%run` pelos demais (o `07` é invocado pelo `08`, não precisa rodar à parte).
 
 ## 🧪 CI/CD
 
@@ -212,6 +241,10 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 - **Auto Loader não lê `.xlsx` nativamente** (só CSV, JSON, Parquet, Avro, ORC, text, binaryFile). A extração atual da Locaweb vem em Excel, o que exigiu decidir entre uma conversão prévia (rejeitada, por reintroduzir processamento single-node) e o uso do conector `spark-excel`.
 - **`spark-excel` exige biblioteca Maven no cluster** — e o **Databricks Free Edition oferece apenas compute serverless**, que não suporta instalação de bibliotecas Maven/JAR (confirmado na documentação oficial e em relatos da comunidade Databricks, inclusive tentativas via REST API). Esse é um ponto em aberto do projeto: a solução definitiva depende de qual tier de workspace estará disponível na fase de produção.
 - **Parser CSV padrão quebrando em campos de texto livre**: o campo `Descrição resumida` tem quebras de linha e aspas internas que inflavam a contagem de linhas se `multiLine`/`quote`/`escape` não fossem configurados explicitamente — encontrado e corrigido durante os testes locais do pipeline.
+- **`maxBins` do `GBTRegressor` insuficiente para colunas categóricas de alta cardinalidade**: o `StringIndexer` marca a coluna como categórica via metadado, e o `GBTRegressor` só aceita até 32 categorias por padrão — `produto` tem ~47, `categoria` ~141+. Corrigido calculando `maxBins` dinamicamente a partir da cardinalidade real de cada coluna, em vez de cravar um valor fixo.
+- **Indexador de categoria "solto" quebrando a inferência**: a primeira versão do treino ajustava `StringIndexer`/`VectorAssembler` fora de um `Pipeline`, sem guardar o transformador ajustado — a inferência (`09`) precisou reaproveitar o DataFrame de teste já processado, que por sua vez tinha passado por um `dropna` de alvo pensado pro treino. Isso descartava silenciosamente o dia mais recente do histórico (sem `target` por construção) e fazia a previsão sair datada um dia antes do correto. Corrigido unificando tudo em um único `Pipeline` do Spark ML, ajustado de uma vez — a inferência passou a ser só `pipeline.transform(linha_nova)`, sem depender de nenhum artefato do treino.
+- **MAPE quebra em série esparsa**: com ~89% das linhas de teste de `produto` tendo valor real igual a zero, o MAPE tradicional fica indefinido na maior parte da base — WAPE foi usado como alternativa mais robusta.
+- **Modelo perde para baseline ingênua em 4 de 6 combinações de volume**: resultado aceito e documentado, não escondido — ver seção [Modelos de ML](#-modelos-de-ml) para os números e o porquê.
 
 ## 🗺️ Roadmap
 
@@ -223,11 +256,15 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 - ✅ Configurar secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` no repositório para o CD publicar de verdade
 - ✅ Features de sazonalidade (feriados nacionais) e segmentação por prioridade (P2/P3) nas séries temporais
 - ✅ Risco de OLA como série preditiva (taxa de violação), não só métrica descritiva
+- ✅ Notebook de treino do modelo de previsão de volume (`GBTRegressor`/MLlib) com portão automático vs. baseline
+- ✅ Pipeline de inferência gravando previsões reais em `gold.previsoes_incidentes`
 - ⬜ Resolver ingestão do `.xlsx` compatível com cluster (spark-excel em ambiente com suporte a bibliotecas Maven)
-- ⬜ Notebook de treino do modelo de previsão (SparkXGBoost / MLlib GBTRegressor)
-- ⬜ Avaliação de modelo (MAE/RMSE por segmento) e registro de experimentos (MLflow)
-- ⬜ Dashboard Power BI consumindo `gold.fato_incidentes_diario` via DirectQuery
+- ⬜ Treino de modelos de risco de OLA (regressão da taxa + classificação binária de alto risco)
+- ⬜ Avaliação consolidada de modelos (notebook dedicado, incluindo `featureImportances`)
+- ⬜ Registro de experimentos (MLflow) — tracking básico primeiro, Model Registry via Unity Catalog depois
+- ⬜ Dashboard Power BI consumindo `gold.fato_incidentes_diario` e `gold.previsoes_incidentes` via DirectQuery
 - ⬜ Explicabilidade distribuída (SynapseML + LightGBM), se necessária
+- ⬜ Documentar decisão "produto/categoria/prioridade cobrem a exigência de segmentação — item de configuração fica de fora por esparsidade (9.171 valores, ~2,8 incidentes/item em 3 anos)"
 
 ## 🤝 Contribuindo
 
