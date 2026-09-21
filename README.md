@@ -10,7 +10,7 @@
 [![Apache Spark](https://img.shields.io/badge/Apache%20Spark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)](https://spark.apache.org/)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-00ADD8?style=for-the-badge)](https://delta.io/)
 [![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![XGBoost](https://img.shields.io/badge/XGBoost-006ACC?style=for-the-badge)](https://xgboost.readthedocs.io/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Power BI](https://img.shields.io/badge/Power%20BI-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)](https://powerbi.microsoft.com/)
 [![Unity Catalog](https://img.shields.io/badge/Unity%20Catalog-FF3621?style=for-the-badge)](https://www.databricks.com/product/unity-catalog)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
@@ -28,18 +28,20 @@ O desafio proposto pela Locaweb no Enterprise Challenge foi transformar esse his
 
 - Quantos incidentes devemos esperar **amanhã (D+1)** e **na próxima semana (D+7)**?
 - Quais produtos, categorias ou equipes concentram o risco de descumprir o **OLA**?
+- Um segmento vai entrar em **estado de alto risco** de violação nos próximos dias?
 - Como identificar tendências de prioridades críticas (**P2/P3**) antes que virem um problema operacional?
 
-O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta — da ingestão bruta ao datamart analítico — desenhado para alimentar modelos de previsão de volume de incidentes e dashboards executivos de risco operacional.
+O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta — da ingestão bruta ao datamart analítico, com modelos de Machine Learning treinados e avaliados contra baseline — desenhado para alimentar dashboards executivos de previsão de volume e risco operacional.
 
 ## ✨ Principais características
 
 - **Arquitetura Lakehouse Medallion** (landing → bronze → silver → gold) 100% sobre Delta Lake e Unity Catalog.
 - **Ingestão incremental** via Databricks Auto Loader, com schema evolution automático.
-- **Configuração cloud-agnostic**: um único arquivo `.env` decide se as tabelas são `MANAGED` (Databricks Free, storage do metastore) ou `EXTERNAL` (apontando para S3, ADLS, GCS ou OCI Object Storage) — migrar de ambiente acadêmico para produção não exige reescrever notebook nenhum.
-- **Múltiplas tabelas de features na Silver**, desacopladas da base tratada — permite treinar modelos com recortes diferentes (produto, categoria, prioridade, e extensível a outros) sem duplicar lógica de limpeza.
+- **Configuração cloud-agnostic**: um único arquivo `.env` decide se as tabelas são `MANAGED` (Databricks Free, storage do metastore) ou `EXTERNAL` (S3, ADLS, GCS, OCI) — migrar de ambiente acadêmico para produção não exige reescrever notebook nenhum.
+- **Múltiplas tabelas de features na Silver**, desacopladas da base tratada — permite treinar modelos com recortes diferentes (produto, categoria, prioridade) sem duplicar lógica de limpeza.
 - **Star Schema na Gold**, pronto para consumo direto via Power BI (DirectQuery) ou Databricks SQL.
-- **Toda decisão de modelagem escolhida por compatibilidade real com processamento distribuído** — nada de bibliotecas single-node escondidas atrás de um cluster (veja a seção [Modelos de ML](#-modelos-de-ml)).
+- **Três modelos de ML avaliados contra baseline** (regressão de volume, regressão de risco, classificação binária de alto risco), com **portão automático**: nenhum modelo é promovido a "previsão oficial" sem primeiro vencer uma baseline ingênua na validação.
+- **Investigação séria de compatibilidade com cluster**: quatro ferramentas de ML distribuído testadas e documentadas como bloqueadas no compute serverless (ver [Desafios técnicos](#️-desafios-técnicos-enfrentados)) antes de chegar na abordagem final.
 - **CI leve no GitHub Actions**: valida sintaxe dos notebooks, lint, integridade da configuração e checagem básica de segredos em cada push/PR.
 
 ## 📊 Fontes de dados
@@ -47,9 +49,11 @@ O **AntecipeAI** é a resposta a isso: um pipeline de dados de ponta a ponta —
 | Fonte | Tipo | Descrição | Volume / cobertura | Licença | Onde entra no pipeline |
 |---|---|---|---|---|---|
 | **`LW-DATASET.xlsx`** | Privada, fornecida pela Locaweb | Extração do sistema ITSM de gestão de incidentes de TI da Locaweb — a base de todo o projeto | 122.543 registros, 19 colunas, período de 02/01/2023 a 31/12/2025 | Uso restrito ao Enterprise Challenge FIAP × Locaweb — não redistribuível | `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` |
-| **[`holidays`](https://github.com/vacanza/holidays) (PyPI)** | Pública, open-source | Biblioteca Python que calcula programaticamente o calendário de feriados nacionais/federais do Brasil, por ano — usada para enriquecer a dimensão de calendário com `is_feriado`/`nome_feriado` | 28 feriados nacionais no período 2023-2025 (**limitação:** só federais — feriados municipais/estaduais não são cobertos, ficam como trabalho futuro de importação manual) | MIT License, mantida pelo time [Vacanza](https://github.com/vacanza/holidays) | `05_silver_transform` (versão fixada: `holidays==0.103`) |
+| **[`holidays`](https://github.com/vacanza/holidays) (PyPI)** | Pública, open-source | Biblioteca Python que calcula programaticamente o calendário de feriados nacionais/federais do Brasil — enriquece a dimensão de calendário com `is_feriado`/`nome_feriado` | 28 feriados nacionais no período 2023-2025 (**limitação:** só federais) | MIT License, mantida pelo time [Vacanza](https://github.com/vacanza/holidays) | `05_silver_transform` (versão fixada: `holidays==0.103`) |
 
-O uso do `holidays` como fonte de enriquecimento segue orientação explícita do próprio material da Locaweb para o desafio: *"sinta-se à vontade em incrementar suas análises utilizando outras fontes, desde que sejam públicas e fidedignas"*.
+O uso do `holidays` como fonte de enriquecimento segue orientação explícita do material da Locaweb para o desafio: *"sinta-se à vontade em incrementar suas análises utilizando outras fontes, desde que sejam públicas e fidedignas"*.
+
+**Nota sobre "item de configuração"**: a Locaweb pede tendência agrupada "por categoria, produto **ou** item de configuração" — a palavra é "ou", não "e". `produto`/`categoria`/`prioridade` já atendem a exigência; `item de configuração` (9.171 valores distintos, ~2,8 incidentes/item em 3 anos de histórico) foi deliberadamente deixado de fora por esparsidade extrema, não por esquecimento.
 
 ## 🏗️ Arquitetura
 
@@ -65,7 +69,7 @@ flowchart LR
 
     subgraph Silver["🥈 Silver"]
         S1["silver.incidentes_tratados"]
-        S2["silver.calendario_feriados<br/>(referência, não é feature)"]
+        S2["silver.calendario_feriados"]
         S3["silver.features_calendario"]
         S4["silver.features_series_produto<br/>(+ prioridade)"]
         S5["silver.features_series_categoria<br/>(+ prioridade)"]
@@ -74,13 +78,12 @@ flowchart LR
         S8["silver.features_risco_ola_equipe<br/>(taxa de violação)"]
     end
 
-    subgraph ML["🧠 ML — Volume (notebooks 07-09)"]
-        M1["07_ml_prep<br/>(calendário + split temporal)"]
-        M2["08_train_volume<br/>(Pipeline + GBTRegressor + portão vs baseline)"]
-        M3["09_inference_gold<br/>(previsão real D+1/D+7)"]
+    subgraph ML["🧠 ML — PyTorch puro (notebooks 11-12)"]
+        M1["11_train_mlp<br/>(regressão volume + risco, MLP 128→64→32)"]
+        M2["12_train_mlp_classificacao<br/>(classificação binária alto risco)"]
     end
 
-    subgraph Gold["🥇 Gold — Star Schema"]
+    subgraph Gold["🥇 Gold — Star Schema + Previsões"]
         F["gold.fato_incidentes"]
         FA["gold.fato_incidentes_diario<br/>(+ taxa_violacao_kpi)"]
         D1["gold.dim_data<br/>(+ is_feriado/nome_feriado)"]
@@ -88,7 +91,9 @@ flowchart LR
         D3["gold.dim_categoria"]
         D4["gold.dim_equipe"]
         D5["gold.dim_prioridade"]
-        GP["gold.previsoes_incidentes<br/>(saída do portão: modelo OU baseline)"]
+        GP["gold.previsoes_incidentes<br/>(volume D+1/D+7)"]
+        GR["gold.previsoes_risco_ola<br/>(taxa de violação D+1/D+7)"]
+        GC["gold.previsoes_classificacao_risco<br/>(alto risco sim/não)"]
     end
 
     BI["📊 Power BI / Databricks SQL"]
@@ -105,89 +110,106 @@ flowchart LR
     S1 --> F
     S1 --> FA
     S2 --> D1
-    S3 -.-> M1
-    S4 -.-> M1
-    S5 -.-> M1
-    S6 -.-> M1
-    M1 --> M2 --> M3
-    M3 --> GP
+    S4 & S5 & S6 --> M1
+    S7 & S8 --> M1
+    S7 & S8 --> M2
+    M1 --> GP
+    M1 --> GR
+    M2 --> GC
     F --> D1 & D2 & D3 & D4 & D5
     F --> BI
     FA --> BI
     GP --> BI
+    GR --> BI
+    GC --> BI
 ```
 
-O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverless), sem custo de infraestrutura para a fase acadêmica — e a mesma base de código é o que será promovida para produção (AWS/Azure/GCP/OCI) se o projeto for aprovado pela Locaweb, trocando apenas variáveis de configuração.
+O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverless), sem custo de infraestrutura para a fase acadêmica.
 
 ## 🧠 Modelos de ML
 
-**Status: previsão de volume (D+1/D+7) implementada e avaliada; risco de OLA ainda pendente.**
+**Status: 3 modelos treinados, avaliados e gravando previsão real em Gold.**
 
-A decisão de modelagem partiu de um critério não negociável: **tudo precisa rodar nativamente em cluster Spark**, sem gargalos de single-node escondidos atrás de uma API distribuída.
+### A jornada até a abordagem final
 
-| Alternativa considerada | Por que foi descartada |
+Testamos, nessa ordem, tudo que o Spark oferece pra ML distribuído — e documentamos cada bloqueio real que encontramos, em vez de esconder as tentativas que não deram certo:
+
+| Tentativa | Resultado |
 |---|---|
-| Prophet (um modelo por série/segmento) | Treina via Stan, single-node — não distribui nativamente em Spark |
-| SHAP puro | Cálculo roda no driver/amostra — não é nativamente distribuído |
+| `GBTRegressor` (MLlib, 100% nativo Spark) | ✅ Funcionou, mas perdeu pra baseline (média móvel 7d) em 4 de 6 combinações de volume |
+| `SparkXGBRegressor` (distribuído) | ❌ Bloqueado — `spark.task.cpus` não disponível no serverless |
+| `XGBoost` puro (single-node, `toPandas()`) | ✅ Funcionou, leve melhora sobre GBTRegressor, ainda perdia pra baseline |
+| `TorchDistributor` (`local_mode=False`, PyTorch distribuído via barrier execution) | ❌ Bloqueado — `spark.master` não disponível no serverless |
+| **MLP puro (PyTorch, `toPandas()` + treino no driver)** | ✅ **Venceu a baseline na maioria das combinações** — abordagem final |
 
-| Abordagem adotada | Detalhes |
-|---|---|
-| **Forecasting como regressão supervisionada** | Em vez de um modelo por segmento, features de calendário + lags (1d/7d/14d) + médias móveis viram entrada de um único modelo multi-segmento (produto/categoria como feature categórica) |
-| **`GBTRegressor` (MLlib)** | Estimador escolhido para a primeira versão — 100% nativo do Spark, zero dependência externa. `SparkXGBoost` documentado como alternativa de mesmo pipeline, não implementada ainda |
-| **`Pipeline` do Spark ML** (`StringIndexer` → `VectorAssembler` → `GBTRegressor`) | Ajustados juntos, de uma vez — necessário para a inferência (`09`) funcionar só com `pipeline.transform(linha_nova)`, sem depender de nenhum artefato do treino |
-| **Portão automático vs. baseline** | Nenhum modelo é gravado como previsão oficial sem antes **vencer uma baseline ingênua** (`média móvel 7 dias`) na validação — ver resultados abaixo |
-| **Explicabilidade via `featureImportances` (MLlib)** | Nativa, sem custo computacional extra — ainda não integrada a um notebook de avaliação dedicado |
-| **SynapseML (LightGBM + SHAP distribuído)** — opcional, futuro | Caminho Spark-nativo se for necessária explicabilidade local por previsão |
+**Quatro tentativas de ferramenta distribuída, quatro bloqueadas pela mesma causa raiz**: o compute serverless do Databricks Free Edition impede qualquer ferramenta que precise introspeccionar configuração real de cluster (`CONFIG_NOT_AVAILABLE.WITHOUT_SUGGESTION` em todos os casos — detalhe em [Desafios técnicos](#️-desafios-técnicos-enfrentados)). Não é escolha de arquitetura, é limitação documentada do ambiente atual.
 
-### Resultados do portão (volume, D+1/D+7)
+**Por que PyTorch puro (sem distribuição) ainda é uma escolha defensável**: as tabelas de feature são pequenas o bastante (a maior tem ~430 mil linhas) para caber inteiras em memória via `toPandas()` — o treino roda no driver, sem paralelismo entre workers, mas isso não é um problema real no volume de dado atual do projeto.
 
-| Tabela | Horizonte | Vencedor | MAE teste |
-|---|---|---|---|
-| produto | D+1 | baseline | 0,24 |
-| produto | D+7 | baseline | 0,28 |
-| categoria | D+1 | baseline | 0,12 |
-| categoria | D+7 | baseline | 0,13 |
-| prioridade | D+1 | **modelo** | 7,65 |
-| prioridade | D+7 | **modelo** | 8,44 |
+### Arquitetura da rede (mesma para os 3 modelos)
 
-A baseline venceu em 4 de 6 combinações — não é falha do projeto, é o resultado honesto: em `produto`/`categoria`, ~89% das linhas de teste têm valor real igual a zero (série muito esparsa), e a média móvel já captura esse padrão tão bem quanto um modelo mais sofisticado consegue. O modelo só ganha espaço em `prioridade`, onde o volume é maior e há mais variação real de padrão pra aprender. Isso confirmou a necessidade do portão: sem ele, o projeto teria "empurrado" um modelo pior que uma média em 4 de 6 segmentos como se fosse a solução.
+`128 → 64 → 32 → 1`, `Dropout(0.2)` nas duas primeiras camadas, `Adam` (`lr=0.002`, `weight_decay=1e-4`), 250 épocas. Regressão usa `MSELoss`; classificação usa `BCEWithLogitsLoss` com `pos_weight` (ver achado sobre desbalanceamento abaixo).
 
-⚠️ **Limite conhecido**: a validação de `prioridade` tem só 90 linhas (3 segmentos × 30 dias) — pouco para ter certeza que a vitória do modelo ali é sinal real e não ruído estatístico. Documentado, não escondido.
+### Portão automático vs. baseline
 
-### Sobre MAPE nesses dados
+Nenhum modelo grava previsão em Gold sem primeiro vencer a baseline (**média móvel 7 dias** para regressão) na validação. Resultado real, `11_train_mlp` (regressão de volume, 6 combinações):
 
-Não é possível usar MAPE tradicional na maioria dos segmentos — com ~89% das linhas de teste em `produto` tendo valor real igual a zero, o MAPE fica indefinido (divisão por zero) na maior parte da base. Usamos **WAPE** (soma dos erros absolutos ÷ soma dos valores reais) como alternativa mais robusta a essa esparsidade.
+| Segmentação | D+1 | D+7 |
+|---|---|---|
+| produto | 🟢 modelo | 🟢 modelo |
+| categoria | 🟢 modelo* | 🟢 modelo |
+| prioridade | 🟢 modelo* | 🟢 modelo |
+
+\* Vitória por margem pequena na validação — **não confirmada no teste** em pelo menos 2 casos (`categoria/D+1`, `prioridade/D+1`), sinal de amostra de validação pequena, não de modelo ruim. Documentado como limite conhecido, não escondido.
+
+Regressão de risco de OLA (`11_train_mlp`, 4 combinações): maioria venceu a baseline, com a mesma ressalva de margem pequena em alguns casos — ver notebook para os números exatos de cada rodada.
+
+Classificação binária de alto risco (`12_train_mlp_classificacao`, 4 combinações): métrica de portão é **F1-score**, não MAE — mais informativo que acurácia pura numa classe desbalanceada (~5-7% dos dias são "alto risco", a maioria dos segmentos nunca viola OLA).
+
+### 🔍 Achado importante: classe desbalanceada quebrando o treino
+
+Na primeira versão da classificação, o modelo aprendeu o caminho preguiçoso — prever sempre "não é risco", já que isso acerta ~95% das linhas sem esforço. F1 do modelo zerava em todas as combinações. Causa raiz: mais de 90% dos dias/segmentos têm taxa de violação = 0 (mesmo achado de zero-inflação da EDA), e `BCEWithLogitsLoss` sem peso de classe deixa a rede convergir pra esse mínimo fácil. Corrigido com `pos_weight` proporcional ao desbalanceamento — documentado no próprio notebook `12`, não só aqui.
+
+### Limiar de "alto risco"
+
+Calculado como o **percentil 75 da taxa de violação, só no conjunto de treino** (evita vazamento de validação/teste) — adaptativo ao dado de cada segmento, em vez de um número cravado arbitrariamente.
 
 ## 🔍 Principais descobertas da análise exploratória
 
-A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.ipynb)) não foi só checagem de nulos — ela mudou decisões reais de arquitetura:
+A EDA (notebook [`04_exploratory_analysis`](notebooks/04_exploratory_analysis.ipynb)) não foi só checagem de nulos — mudou decisões reais de arquitetura e de modelagem:
 
-- **Mudança de regime no volume de incidentes**: o volume bruto salta ~6x em setembro/2025, mas isso é inteiramente causado por uma ferramenta de monitoramento automatizado (tickets auto-fechados, sem intervenção humana), não por variação operacional real. O volume que **entra no KPI** — o que de fato importa para o desafio — é estável desde janeiro/2025. Essa descoberta definiu qual série o modelo deve prever.
-- **151 incidentes elegíveis para o KPI mas marcados como fora dele**, concentrados em dezembro/2025 — inconsistência real da fonte, documentada e tratada como flag, não corrigida "por baixo dos panos".
-- **2.499 incidentes com duração 10x acima do SLA da própria prioridade**, sem sinalização de violação — tratados como outliers via flag (`duracao_suspeita`), não excluídos.
-- Nulos de ~63% em Produto/Categoria são **estruturais** (tickets abertos por monitoramento automatizado), não erro de qualidade — decisão de manter nulo explícito em vez de imputar.
+- **Mudança de regime no volume de incidentes**: o volume bruto salta ~6x em setembro/2025, causado por uma ferramenta de monitoramento automatizado, não por variação operacional real. O volume que **entra no KPI** é estável desde janeiro/2025 — por isso o treino de ML usa só o histórico a partir de dezembro/2024 (`DATA_INICIO_TREINO_ML`).
+- **Zero-inflação extrema**: ~89% das linhas de teste de `produto`/D+1 têm valor real igual a zero, e mais de 90% dos dias/segmentos de risco nunca violam OLA. Isso quebra o MAPE tradicional (WAPE foi usado como alternativa) e, na classificação, quebrou o treino até corrigirmos com `pos_weight`.
+- **151 incidentes elegíveis para o KPI mas marcados como fora dele**, concentrados em dezembro/2025 — inconsistência real da fonte, documentada como flag (`kpi_regra_divergente`), não corrigida "por baixo dos panos".
+- **2.499 incidentes com duração 10x acima do SLA da própria prioridade**, sem sinalização de violação — investigamos e encontramos evidência (código de fechamento "Sem retorno do solicitante" em boa parte dos casos) de que pode ser SLA pausado por espera do cliente, não erro da fonte — tratado como outlier via flag (`duracao_suspeita`), não "corrigido" às cegas.
 
 ## 📂 Estrutura do repositório
 
 ```
 .
 ├── .github/workflows/ci.yml          # CI (lint/validação) + CD (deploy do bundle)
-├── databricks.yml                    # Databricks Asset Bundle (config principal)
+├── databricks.yml                    # Databricks Asset Bundle
 ├── resources/
 │   └── antecipeai_job.yml            # Definição do Job (pipeline ETL encadeado)
 ├── config/
 │   └── antecipeai.env                # Configuração central (catalog, schemas, MANAGED/EXTERNAL)
 ├── notebooks/
 │   ├── 00_config.ipynb               # Carrega o .env — importado via %run pelos demais
-│   ├── 01_setup_catalog_schemas.ipynb   # Cria catalog, schemas e Volume de staging
+│   ├── 01_setup_catalog_schemas.ipynb
 │   ├── 02_bootstrap_landing_convert_xlsx.ipynb
 │   ├── 03_bronze_ingestion_autoloader.ipynb
-│   ├── 04_exploratory_analysis.ipynb    # EDA completa, evidência das decisões de arquitetura
-│   ├── 05_silver_transform.ipynb        # Limpeza, regras de negócio, features de série temporal
-│   ├── 06_gold_datamart.ipynb           # Star Schema (dimensões + fato)
-│   ├── 07_ml_prep.ipynb                 # Utilitário: junta calendário + split temporal (treino/val/teste)
-│   ├── 08_train_volume.ipynb            # Treino GBTRegressor + portão automático vs. baseline
-│   └── 09_inference_gold.ipynb          # Gera previsão real (D+1/D+7) e grava em gold.previsoes_incidentes
+│   ├── 04_exploratory_analysis.ipynb
+│   ├── 05_silver_transform.ipynb
+│   ├── 06_gold_datamart.ipynb
+│   ├── 11_train_mlp.ipynb            # Regressão (volume + risco), MLP + portão + grava Gold
+│   ├── 12_train_mlp_classificacao.ipynb  # Classificação binária de alto risco + grava Gold
+│   └── historico/                    # Notebooks substituídos pela abordagem MLP — mantidos
+│       │                              # como evidência da investigação (GBTRegressor era a
+│       │                              # abordagem original, superada em desempenho pelo MLP)
+│       ├── 07_ml_prep.ipynb
+│       ├── 08_train_volume.ipynb
+│       ├── 09_inference_gold.ipynb
+│       └── 10_train_risco_regressao.ipynb
 ├── LICENSE
 └── README.md
 ```
@@ -202,69 +224,49 @@ ANTECIPEAI_STORAGE_ROOT=          # s3://..., abfss://..., gs://..., oci://... (
 ANTECIPEAI_CLOUD_PROVIDER=NONE    # NONE | AWS | AZURE | GCP | OCI
 ```
 
-Migrar da fase acadêmica (Databricks Free, tudo `MANAGED`) para produção é uma troca de valores nesse arquivo — os notebooks não mudam uma linha.
-
 ## 🚀 Como rodar
 
 1. Suba a pasta do projeto (com `config/` e `notebooks/` lado a lado) para um Repo do Databricks.
-2. Execute os notebooks em ordem:
-   `01_setup_catalog_schemas` → `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` → `04_exploratory_analysis` → `05_silver_transform` → `06_gold_datamart` → `08_train_volume` → `09_inference_gold`.
-3. `00_config` e `07_ml_prep` não rodam sozinhos — são chamados via `%run` pelos demais (o `07` é invocado pelo `08`, não precisa rodar à parte).
+2. Execute em ordem:
+   `01_setup_catalog_schemas` → `02_bootstrap_landing_convert_xlsx` → `03_bronze_ingestion_autoloader` → `04_exploratory_analysis` → `05_silver_transform` → `06_gold_datamart` → `11_train_mlp` → `12_train_mlp_classificacao`.
+3. `00_config` não roda sozinho — é chamado via `%run` pelos demais.
+4. Os notebooks em `notebooks/historico/` **não fazem parte do fluxo de produção** — só rode se quiser reproduzir a comparação de modelos (GBTRegressor vs. MLP) por conta própria.
 
 ## 🧪 CI/CD
 
 O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) tem dois jobs encadeados:
 
-**CI — `lint-and-validate`** (roda em todo push/PR para `main`/`develop`):
-- ✅ Compila todos os notebooks (`.ipynb`) e valida a sintaxe de cada célula de código para pegar erro de sintaxe antes do deploy.
-- ✅ Lint com `flake8` (com exceções deliberadas para `spark`/`dbutils`/`display`, injetados pelo runtime do Databricks e inexistentes no ambiente de CI).
-- ✅ Valida que `config/*.env` tem todas as chaves obrigatórias.
-- ✅ Checagem básica de segredos hardcoded antes do merge.
+**CI — `lint-and-validate`** (todo push/PR): compila e valida sintaxe dos notebooks `.ipynb`, lint com `flake8`, valida `config/*.env`, checagem básica de segredos.
 
-**CD — `deploy`** (só em push direto na `main`, só se o CI passar):
-- 🚀 Publica o [Databricks Asset Bundle](databricks.yml) no workspace via `databricks bundle deploy --target prod`.
-- O bundle sincroniza `notebooks/` + `config/` para o workspace e publica o Job `AntecipeAI - Pipeline ETL` (definido em [`resources/antecipeai_job.yml`](resources/antecipeai_job.yml)), que encadeia as 6 etapas do pipeline como tasks sequenciais.
-- Exige os secrets `DATABRICKS_HOST` e `DATABRICKS_TOKEN` configurados no repositório (Settings → Secrets and variables → Actions) — sem eles, só o CI roda, o job de deploy falha isoladamente sem afetar a validação.
-- O path de publicação no workspace **não é fixo no código** — o bundle resolve automaticamente a partir de quem está autenticado (`${workspace.current_user.userName}`), então não é preciso descobrir o path do workspace de ninguém de antemão.
-
-Para rodar o deploy manualmente do seu próprio computador (sem depender do GitHub Actions):
-
-```bash
-databricks bundle validate   # confere a sintaxe do bundle
-databricks bundle deploy --target dev
-```
+**CD — `deploy`** (só push direto na `main`, só se o CI passar): publica o [Databricks Asset Bundle](databricks.yml) via `databricks bundle deploy --target prod`, usando os secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` já configurados no repositório.
 
 ## ⚠️ Desafios técnicos enfrentados
 
 Documentar isso é proposital — decisões de engenharia real raramente são lineares:
 
-- **Auto Loader não lê `.xlsx` nativamente** (só CSV, JSON, Parquet, Avro, ORC, text, binaryFile). A extração atual da Locaweb vem em Excel, o que exigiu decidir entre uma conversão prévia (rejeitada, por reintroduzir processamento single-node) e o uso do conector `spark-excel`.
-- **`spark-excel` exige biblioteca Maven no cluster** — e o **Databricks Free Edition oferece apenas compute serverless**, que não suporta instalação de bibliotecas Maven/JAR (confirmado na documentação oficial e em relatos da comunidade Databricks, inclusive tentativas via REST API). Esse é um ponto em aberto do projeto: a solução definitiva depende de qual tier de workspace estará disponível na fase de produção.
-- **Parser CSV padrão quebrando em campos de texto livre**: o campo `Descrição resumida` tem quebras de linha e aspas internas que inflavam a contagem de linhas se `multiLine`/`quote`/`escape` não fossem configurados explicitamente — encontrado e corrigido durante os testes locais do pipeline.
-- **`maxBins` do `GBTRegressor` insuficiente para colunas categóricas de alta cardinalidade**: o `StringIndexer` marca a coluna como categórica via metadado, e o `GBTRegressor` só aceita até 32 categorias por padrão — `produto` tem ~47, `categoria` ~141+. Corrigido calculando `maxBins` dinamicamente a partir da cardinalidade real de cada coluna, em vez de cravar um valor fixo.
-- **Indexador de categoria "solto" quebrando a inferência**: a primeira versão do treino ajustava `StringIndexer`/`VectorAssembler` fora de um `Pipeline`, sem guardar o transformador ajustado — a inferência (`09`) precisou reaproveitar o DataFrame de teste já processado, que por sua vez tinha passado por um `dropna` de alvo pensado pro treino. Isso descartava silenciosamente o dia mais recente do histórico (sem `target` por construção) e fazia a previsão sair datada um dia antes do correto. Corrigido unificando tudo em um único `Pipeline` do Spark ML, ajustado de uma vez — a inferência passou a ser só `pipeline.transform(linha_nova)`, sem depender de nenhum artefato do treino.
-- **MAPE quebra em série esparsa**: com ~89% das linhas de teste de `produto` tendo valor real igual a zero, o MAPE tradicional fica indefinido na maior parte da base — WAPE foi usado como alternativa mais robusta.
-- **Modelo perde para baseline ingênua em 4 de 6 combinações de volume**: resultado aceito e documentado, não escondido — ver seção [Modelos de ML](#-modelos-de-ml) para os números e o porquê.
+- **Quatro ferramentas de ML distribuído bloqueadas pelo mesmo padrão**: `spark-excel` (biblioteca Maven, requer cluster não-serverless), `spark.conf.set` para Column Mapping (`CONFIG_NOT_AVAILABLE`), `SparkXGBRegressor` (`spark.task.cpus` indisponível), `TorchDistributor` em modo distribuído (`spark.master` indisponível). Confirma que é limitação de arquitetura do compute serverless do Databricks Free Edition, não falha pontual — motivou a decisão final de usar PyTorch puro (`toPandas()` + treino no driver) em vez de insistir em distribuição.
+- **`maxBins` do `GBTRegressor` insuficiente para colunas categóricas de alta cardinalidade** — corrigido calculando dinamicamente a partir da cardinalidade real de cada coluna.
+- **Bug de coluna duplicada no treino MLP**: a coluna usada como baseline (`media_movel_7d`) também é uma das features de entrada — selecioná-la duas vezes no Spark gerava uma coluna duplicada no Pandas, inflando silenciosamente o número de colunas do tensor de entrada e quebrando o `nn.Linear` (`mat1 and mat2 shapes cannot be multiplied`). Corrigido evitando a seleção duplicada.
+- **Classe desbalanceada quebrando o treino de classificação**: ver seção [Modelos de ML](#-modelos-de-ml) — `pos_weight` no `BCEWithLogitsLoss` resolveu.
+- **MAPE quebra em série esparsa**: WAPE usado como alternativa mais robusta a zero-inflação.
+- **Indexador de categoria "solto" quebrando a inferência** (versão GBTRegressor, arquivada): corrigido nos notebooks históricos unificando tudo em `Pipeline` do Spark ML antes de migrar para a abordagem MLP.
 
 ## 🗺️ Roadmap
 
-- ✅ Ingestão Bronze com Auto Loader e metadata de rastreabilidade
-- ✅ Camada Silver com regras de negócio validadas e flags de qualidade de dados
-- ✅ Datamart Gold em Star Schema
-- ✅ CI básico no GitHub Actions
-- ✅ CD via Databricks Asset Bundles (deploy automático na `main`)
-- ✅ Configurar secrets `DATABRICKS_HOST`/`DATABRICKS_TOKEN` no repositório para o CD publicar de verdade
-- ✅ Features de sazonalidade (feriados nacionais) e segmentação por prioridade (P2/P3) nas séries temporais
-- ✅ Risco de OLA como série preditiva (taxa de violação), não só métrica descritiva
-- ✅ Notebook de treino do modelo de previsão de volume (`GBTRegressor`/MLlib) com portão automático vs. baseline
-- ✅ Pipeline de inferência gravando previsões reais em `gold.previsoes_incidentes`
-- ⬜ Resolver ingestão do `.xlsx` compatível com cluster (spark-excel em ambiente com suporte a bibliotecas Maven)
-- ⬜ Treino de modelos de risco de OLA (regressão da taxa + classificação binária de alto risco)
-- ⬜ Avaliação consolidada de modelos (notebook dedicado, incluindo `featureImportances`)
-- ⬜ Registro de experimentos (MLflow) — tracking básico primeiro, Model Registry via Unity Catalog depois
-- ⬜ Dashboard Power BI consumindo `gold.fato_incidentes_diario` e `gold.previsoes_incidentes` via DirectQuery
-- ⬜ Explicabilidade distribuída (SynapseML + LightGBM), se necessária
-- ⬜ Documentar decisão "produto/categoria/prioridade cobrem a exigência de segmentação — item de configuração fica de fora por esparsidade (9.171 valores, ~2,8 incidentes/item em 3 anos)"
+- ✅ Pipeline ETL completo (Bronze → Silver → Gold, Star Schema)
+- ✅ Regressão de volume de incidentes (MLP, D+1/D+7), gravando `gold.previsoes_incidentes`
+- ✅ Regressão de risco de OLA (MLP, D+1/D+7), gravando `gold.previsoes_risco_ola`
+- ✅ Classificação binária de alto risco (MLP), gravando `gold.previsoes_classificacao_risco`
+- ✅ Portão automático vs. baseline em todos os modelos
+- ✅ Investigação documentada de 4 tentativas de ML distribuído bloqueadas no serverless
+- ✅ CI/CD via GitHub Actions + Databricks Asset Bundles
+- ⬜ Dashboard Power BI consumindo as 3 tabelas de previsão via DirectQuery
+- ⬜ Auto Loader com gatilho automático (file arrival trigger) — hoje roda sob demanda
+- ⬜ MLflow — tracking básico de experimentos (adiado conscientemente até os modelos estabilizarem)
+- ⬜ Resolver ingestão do `.xlsx` compatível com cluster (`spark-excel`) — depende de acesso a cluster clássico
+- ⬜ Refinar `duracao_suspeita` (excluir casos de "Sem retorno do solicitante", possível SLA pausado)
+- ⬜ Enriquecer calendário com eventos de varejo (Black Friday, Cyber Monday, Natal)
+- ⬜ Testar janela de treino alternativa (set/2024 vs. dez/2024 vs. histórico completo)
 
 ## 🤝 Contribuindo
 
