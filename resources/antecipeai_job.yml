@@ -1,39 +1,60 @@
-# Definição do Job "AntecipeAI - Pipeline ETL" publicado pelo Asset Bundle.
+# Definição dos Jobs do AntecipeAI, publicados pelo Asset Bundle.
 #
 # Roda em compute SERVERLESS de propósito: o Databricks Free Edition só
 # oferece serverless (sem cluster clássico) — por isso nenhuma task abaixo
 # define job_clusters/new_cluster. Ao omitir o compute, o Databricks usa
 # serverless automaticamente.
 #
-# ATENÇÃO — pipeline ainda não roda 100% desatendido de ponta a ponta:
-#   1) a task "bootstrap_landing_convert_xlsx" depende de alguém ter subido
-#      manualmente o LW-DATASET.xlsx no Volume antes (Catalog Explorer →
-#      Upload) — não é acionado por este Job sozinho.
-#   2) a ingestão do .xlsx em si ainda está pendente da decisão sobre
-#      spark-excel vs. limitação do compute serverless (ver README, seção
-#      "Desafios técnicos enfrentados").
-# Isso não trava o deploy do bundle — só significa que "Run now" no Job só
-# vai completar com sucesso depois desses dois pontos resolvidos.
+# TRÊS JOBS SEPARADOS, DE PROPÓSITO:
+#   - antecipeai_setup: só a criação de catalog/schemas/Volume (task 01).
+#     SEM gatilho — roda manual, uma vez só, antes de tudo.
+#   - antecipeai_bootstrap: só a conversão .xlsx -> Parquet (task 02). COM
+#     gatilho em incoming_xlsx/ — dispara quando alguém sobe um .xlsx novo
+#     manualmente (Catalog Explorer -> Upload).
+#   - antecipeai_pipeline: 03 até 12. COM gatilho em incidentes/ (não em
+#     incoming_xlsx/) — pega tanto o Parquet que o antecipeai_bootstrap
+#     acabou de gerar quanto qualquer extração futura que já vier pronta em
+#     CSV/Parquet direto nessa pasta, sem passar pelo bootstrap (caminho
+#     que o notebook 02 já previa desde o início). Separar em Job próprio
+#     também evita loop: se 02 estivesse na mesma cadeia que o gatilho de
+#     incidentes/, o próprio Job se dispararia de novo ao escrever ali.
+#
+# ATENÇÃO — mesmo com os três Jobs prontos, a ingestão do .xlsx em si ainda
+# depende da decisão sobre spark-excel vs. limitação do compute serverless
+# (ver README, seção "Desafios técnicos enfrentados").
 
 resources:
   jobs:
-    antecipeai_pipeline:
-      name: "AntecipeAI - Pipeline ETL (Bronze -> Silver -> Gold)"
-
+    antecipeai_setup:
+      name: "AntecipeAI - Setup (rodar manualmente, uma vez só)"
       tasks:
         - task_key: setup_catalog_schemas
           notebook_task:
             notebook_path: ../notebooks/01_setup_catalog_schemas.ipynb
 
+    antecipeai_bootstrap:
+      name: "AntecipeAI - Bootstrap xlsx -> Parquet"
+      trigger:
+        file_arrival:
+          url: /Volumes/antecipeai/landing/raw/incoming_xlsx/
+          min_time_between_triggers_seconds: 60
+          wait_after_last_change_seconds: 60
+      tasks:
         - task_key: bootstrap_landing_convert_xlsx
-          depends_on:
-            - task_key: setup_catalog_schemas
           notebook_task:
             notebook_path: ../notebooks/02_bootstrap_landing_convert_xlsx.ipynb
 
+    antecipeai_pipeline:
+      name: "AntecipeAI - Pipeline ETL + ML (Bronze -> Silver -> Gold -> Previsões)"
+
+      trigger:
+        file_arrival:
+          url: /Volumes/antecipeai/landing/raw/incidentes/
+          min_time_between_triggers_seconds: 60
+          wait_after_last_change_seconds: 60
+
+      tasks:
         - task_key: bronze_ingestion_autoloader
-          depends_on:
-            - task_key: bootstrap_landing_convert_xlsx
           notebook_task:
             notebook_path: ../notebooks/03_bronze_ingestion_autoloader.ipynb
 
@@ -54,3 +75,15 @@ resources:
             - task_key: silver_transform
           notebook_task:
             notebook_path: ../notebooks/06_gold_datamart.ipynb
+
+        - task_key: train_mlp_regressao
+          depends_on:
+            - task_key: gold_datamart
+          notebook_task:
+            notebook_path: ../notebooks/11_train_mlp.ipynb
+
+        - task_key: train_mlp_classificacao
+          depends_on:
+            - task_key: gold_datamart
+          notebook_task:
+            notebook_path: ../notebooks/12_train_mlp_classificacao.ipynb
