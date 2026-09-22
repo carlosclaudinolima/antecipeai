@@ -14,7 +14,7 @@
 [![Power BI](https://img.shields.io/badge/Power%20BI-F2C811?style=for-the-badge&logo=powerbi&logoColor=black)](https://powerbi.microsoft.com/)
 [![Unity Catalog](https://img.shields.io/badge/Unity%20Catalog-FF3621?style=for-the-badge)](https://www.databricks.com/product/unity-catalog)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue?style=for-the-badge)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey?style=for-the-badge)](LICENSE)
 
 </div>
 
@@ -59,8 +59,10 @@ O uso do `holidays` como fonte de enriquecimento segue orientação explícita d
 
 ```mermaid
 flowchart LR
+    XLSX["📄 .xlsx enviado<br/>(incoming_xlsx/)"]
+
     subgraph Landing["📥 Landing"]
-        V["Volume raw<br/>(staging area)"]
+        V["Volume raw<br/>(incidentes/)"]
     end
 
     subgraph Bronze["🥉 Bronze"]
@@ -83,6 +85,8 @@ flowchart LR
         M2["12_train_mlp_classificacao<br/>(classificação binária alto risco)"]
     end
 
+    MLFLOW["📈 MLflow<br/>/Shared/antecipeai_ml_experiments<br/>(tracking básico, sem Model Registry)"]
+
     subgraph Gold["🥇 Gold — Star Schema + Previsões"]
         F["gold.fato_incidentes"]
         FA["gold.fato_incidentes_diario<br/>(+ taxa_violacao_kpi)"]
@@ -98,7 +102,8 @@ flowchart LR
 
     BI["📊 Power BI / Databricks SQL"]
 
-    V -->|Auto Loader| B
+    XLSX -->|"Job antecipeai_bootstrap<br/>(gatilho file_arrival)"| V
+    V -->|"Job antecipeai_pipeline<br/>(gatilho file_arrival) + Auto Loader"| B
     B --> S1
     B --> S2
     B --> S3
@@ -113,6 +118,8 @@ flowchart LR
     S4 & S5 & S6 --> M1
     S7 & S8 --> M1
     S7 & S8 --> M2
+    M1 -.-> MLFLOW
+    M2 -.-> MLFLOW
     M1 --> GP
     M1 --> GR
     M2 --> GC
@@ -124,7 +131,7 @@ flowchart LR
     GC --> BI
 ```
 
-O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverless), sem custo de infraestrutura para a fase acadêmica.
+O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverless), sem custo de infraestrutura para a fase acadêmica. A ingestão é **automática**: dois Jobs com gatilho `file_arrival` encadeiam a execução assim que um arquivo novo chega — `antecipeai_bootstrap` (converte `.xlsx` → Parquet) e `antecipeai_pipeline` (Bronze → Silver → Gold → treino dos modelos). Um terceiro Job, `antecipeai_setup`, roda manual e uma única vez (criação de catalog/schemas/Volume).
 
 ## 🧠 Modelos de ML
 
@@ -260,11 +267,12 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 - ✅ Portão automático vs. baseline em todos os modelos
 - ✅ Investigação documentada de 4 tentativas de ML distribuído bloqueadas no serverless
 - ✅ CI/CD via GitHub Actions + Databricks Asset Bundles
-- ⬜ Dashboard Power BI consumindo as 3 tabelas de previsão via DirectQuery
-- ⬜ Auto Loader com gatilho automático (file arrival trigger) — hoje roda sob demanda
-- ⬜ MLflow — tracking básico de experimentos (adiado conscientemente até os modelos estabilizarem)
-- ⬜ Resolver ingestão do `.xlsx` compatível com cluster (`spark-excel`) — depende de acesso a cluster clássico
-- ⬜ Refinar `duracao_suspeita` (excluir casos de "Sem retorno do solicitante", possível SLA pausado)
+- ✅ CI/CD via GitHub Actions + Databricks Asset Bundles
+- ✅ Dashboard Power BI consumindo as tabelas de previsão via DirectQuery
+- ✅ Auto Loader com gatilho automático (file arrival trigger) — 3 Jobs encadeados (`antecipeai_setup` manual, `antecipeai_bootstrap` e `antecipeai_pipeline` com gatilho), dispara sozinho a cada arquivo novo
+- ✅ MLflow — tracking básico de experimentos, registrando parâmetro/métrica de cada uma das 14 combinações treinadas (`11`/`12`) em `/Shared/antecipeai_ml_experiments`
+- 🚫 Resolver ingestão do `.xlsx` compatível com cluster (`spark-excel`) — **descartado**: a causa raiz é o compute serverless do Free Edition não suportar bibliotecas Maven, e isso só muda com conta paga (cluster clássico). Não é prioridade retomar sem essa mudança de ambiente.
+- ⬜ Refinar `duracao_suspeita` (excluir casos de "Sem retorno do solicitante", possível SLA pausado) — **ideia levantada, nunca implementada/testada**; ficou só como hipótese registrada durante a EDA, não entrou em nenhum notebook
 - ⬜ Enriquecer calendário com eventos de varejo (Black Friday, Cyber Monday, Natal)
 - ⬜ Testar janela de treino alternativa (set/2024 vs. dez/2024 vs. histórico completo)
 
@@ -274,7 +282,7 @@ Projeto acadêmico do Enterprise Challenge FIAP × Locaweb. Para contribuir, fa�
 
 ## 📄 Licença
 
-Distribuído sob a licença [Apache 2.0](LICENSE).
+Distribuído sob a licença [CC BY-NC 4.0](LICENSE) (Creative Commons Atribuição-NãoComercial) — uso comercial requer autorização explícita dos autores.
 
 ## 🏫 Contexto acadêmico
 
