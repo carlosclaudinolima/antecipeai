@@ -139,43 +139,53 @@ O pipeline roda inteiramente sobre **Databricks Free Edition** (compute serverle
 
 ### A jornada até a abordagem final
 
-Testamos, nessa ordem, tudo que o Spark oferece pra ML distribuído — e documentamos cada bloqueio real que encontramos, em vez de esconder as tentativas que não deram certo:
+Testamos, nessa ordem, tudo que o Spark oferece pra ML distribuído — e documentamos cada tentativa, incluindo as que perderam por desempenho e as que foram bloqueadas por ambiente (são motivos diferentes, e os dois importam):
 
 | Tentativa | Resultado |
 |---|---|
-| `GBTRegressor` (MLlib, 100% nativo Spark) | ✅ Funcionou, mas perdeu pra baseline (média móvel 7d) em 4 de 6 combinações de volume |
+| `GBTRegressor` (MLlib, 100% nativo Spark) | ⚠️ Rodou sem problema de ambiente — mas **perdeu pra baseline** (média móvel 7d) em 4 de 6 combinações de volume. Não é questão de ambiente, é desempenho fraco mesmo |
 | `SparkXGBRegressor` (distribuído) | ❌ Bloqueado — `spark.task.cpus` não disponível no serverless |
-| `XGBoost` puro (single-node, `toPandas()`) | ✅ Funcionou, leve melhora sobre GBTRegressor, ainda perdia pra baseline |
+| `XGBoost` puro (single-node, `toPandas()`) | ⚠️ Rodou sem problema de ambiente — testado lado a lado com `GBTRegressor` e a baseline em 2 combinações: leve melhora sobre `GBTRegressor`, mas **também perdeu pra baseline nas duas**. Não valia a pena continuar nessa linha, independente do bloqueio da versão distribuída |
 | `TorchDistributor` (`local_mode=False`, PyTorch distribuído via barrier execution) | ❌ Bloqueado — `spark.master` não disponível no serverless |
-| **MLP puro (PyTorch, `toPandas()` + treino no driver)** | ✅ **Venceu a baseline na maioria das combinações** — abordagem final |
+| **MLP puro (PyTorch, `toPandas()` + treino no driver)** | ✅ **Venceu a baseline em 10 de 10 combinações de volume/risco na validação** — abordagem final |
 
-**Quatro tentativas de ferramenta distribuída, quatro bloqueadas pela mesma causa raiz**: o compute serverless do Databricks Free Edition impede qualquer ferramenta que precise introspeccionar configuração real de cluster (`CONFIG_NOT_AVAILABLE.WITHOUT_SUGGESTION` em todos os casos — detalhe em [Desafios técnicos](#️-desafios-técnicos-enfrentados)). Não é escolha de arquitetura, é limitação documentada do ambiente atual.
+**Fica claro, separando os dois motivos**: `GBTRegressor` e `XGBoost` puro não foram descartados por bloqueio de ambiente — os dois **rodaram normalmente** no serverless (nenhum usa API de cluster que o Databricks Free bloqueia) e **perderam por desempenho puro**, mesmo depois de testados de verdade. Já `SparkXGBRegressor` e `TorchDistributor` (as versões *distribuídas*) nunca chegaram a rodar — foram bloqueadas antes mesmo de dar pra avaliar desempenho (`CONFIG_NOT_AVAILABLE.WITHOUT_SUGGESTION` nos dois casos — detalhe em [Desafios técnicos](#️-desafios-técnicos-enfrentados)). Não misturamos as duas coisas: "perdeu jogando" é diferente de "nem entrou em campo".
 
 **Por que PyTorch puro (sem distribuição) ainda é uma escolha defensável**: as tabelas de feature são pequenas o bastante (a maior tem ~430 mil linhas) para caber inteiras em memória via `toPandas()` — o treino roda no driver, sem paralelismo entre workers, mas isso não é um problema real no volume de dado atual do projeto.
 
-### Arquitetura da rede (mesma para os 3 modelos)
+### Arquitetura da rede
 
-`128 → 64 → 32 → 1`, `Dropout(0.2)` nas duas primeiras camadas, `Adam` (`lr=0.002`, `weight_decay=1e-4`), 250 épocas. Regressão usa `MSELoss`; classificação usa `BCEWithLogitsLoss` com `pos_weight` (ver achado sobre desbalanceamento abaixo).
+`128 → 64 → 32 → 1`, `Dropout(0.2)` nas duas primeiras camadas, `Adam` (`lr=0.002`, `weight_decay=1e-4`), 250 épocas — mesma base para os 3 modelos.
 
-### Portão automático vs. baseline
+**Função de perda da regressão: `HuberLoss(delta=0.5)`, não `MSELoss`.** `MSE` eleva o erro ao quadrado, deixando dias/segmentos com pico raro dominar o gradiente desproporcionalmente — instável justamente na série mais esparsa (`produto`, `categoria`), que é zero-inflacionada por natureza (ver EDA). `HuberLoss` se comporta como MSE pra erro pequeno mas vira linear pra erro grande, mais robusto a outlier. Testado contra `MSELoss` nas 10 combinações: melhorou ou empatou em todas, e fechou a única combinação que perdia o portão na validação (`features_risco_ola_produto/target_taxa_d1`).
 
-Nenhum modelo grava previsão em Gold sem primeiro vencer a baseline (**média móvel 7 dias** para regressão) na validação. Resultado real, `11_train_mlp` (regressão de volume, 6 combinações):
+Classificação usa uma arquitetura diferente de saída — ver seção própria abaixo.
+
+### Portão automático vs. baseline (regressão)
+
+Nenhum modelo grava previsão em Gold sem primeiro vencer a baseline (**média móvel 7 dias**) na validação. Resultado real, `11_train_mlp` (10 combinações — 6 de volume, 4 de risco de OLA), com `HuberLoss`:
 
 | Segmentação | D+1 | D+7 |
 |---|---|---|
 | produto | 🟢 modelo | 🟢 modelo |
-| categoria | 🟢 modelo* | 🟢 modelo |
-| prioridade | 🟢 modelo* | 🟢 modelo |
+| categoria | 🟢 modelo | 🟢 modelo |
+| prioridade | 🟢 modelo | 🟢 modelo |
 
-\* Vitória por margem pequena na validação — **não confirmada no teste** em pelo menos 2 casos (`categoria/D+1`, `prioridade/D+1`), sinal de amostra de validação pequena, não de modelo ruim. Documentado como limite conhecido, não escondido.
+**Modelo vence nas 10 de 10** com `HuberLoss` — inclusive a `categoria/D+1`, que com `MSELoss` só vencia por margem de ruído na validação e não se confirmava no teste; com `Huber`, a vitória ficou sólida nos dois.
 
-Regressão de risco de OLA (`11_train_mlp`, 4 combinações): maioria venceu a baseline, com a mesma ressalva de margem pequena em alguns casos — ver notebook para os números exatos de cada rodada.
+### Classificação binária de alto risco — *residual learning*
 
-Classificação binária de alto risco (`12_train_mlp_classificacao`, 4 combinações): métrica de portão é **F1-score**, não MAE — mais informativo que acurácia pura numa classe desbalanceada (~5-7% dos dias são "alto risco", a maioria dos segmentos nunca viola OLA).
+A primeira versão treinava um classificador binário direto (`BCEWithLogitsLoss` + `pos_weight`) e nunca bateu a baseline — testamos 12 técnicas diferentes tentando reverter isso (Focal Loss, oversampling, arquitetura maior, transfer learning, fine-tuning em duas etapas, stacking, mais granularidade de lag, ensemble por `OU`), nenhuma bateu a baseline de forma robusta.
 
-### 🔍 Achado importante: classe desbalanceada quebrando o treino
+**O que funcionou: prever o resíduo, não o valor absoluto.** Em vez do modelo prever a taxa de violação do zero, ele prevê **o quanto a realidade vai desviar da baseline** (`taxa_real - taxa_media_movel_7d`) — a previsão final é `baseline + resíduo_previsto`. A baseline vira o ponto de partida embutido no cálculo, não uma feature entre outras que o modelo pode simplesmente ignorar (o que ela vinha fazendo nas 12 tentativas anteriores). Isso deu **recall maior que a baseline nas 4 de 4 combinações**, em validação e teste.
 
-Na primeira versão da classificação, o modelo aprendeu o caminho preguiçoso — prever sempre "não é risco", já que isso acerta ~95% das linhas sem esforço. F1 do modelo zerava em todas as combinações. Causa raiz: mais de 90% dos dias/segmentos têm taxa de violação = 0 (mesmo achado de zero-inflação da EDA), e `BCEWithLogitsLoss` sem peso de classe deixa a rede convergir pra esse mínimo fácil. Corrigido com `pos_weight` proporcional ao desbalanceamento — documentado no próprio notebook `12`, não só aqui.
+**Por que a métrica de portão é recall, não F1.** Pra risco de violação de SLA, um **falso negativo** (deixar passar um risco real, sem avisar ninguém) custa muito mais pra Locaweb do que um **falso positivo** (a equipe checa um alarme que não se confirma — minutos perdidos, sem dano real). F1 pesa os dois erros igual, o que não reflete essa assimetria de custo do negócio. Recall mede diretamente "de todo risco real que existia, quantos a gente pegou" — é a métrica certa quando perder caso custa mais caro que alarme falso.
+
+**O preço, sem esconder**: o número de falsos positivos sobe bastante (às vezes 4-5x mais que a baseline) — é o trade-off sendo aceito de propósito, documentado, não ignorado.
+
+### 🔍 Achado: classe desbalanceada quebrando o treino direto
+
+Antes de chegar no *residual learning*, o classificador direto aprendia o caminho preguiçoso — prever sempre "não é risco", já que isso acerta ~95% das linhas sem esforço (mais de 90% dos dias/segmentos têm taxa de violação = 0, mesmo achado de zero-inflação da EDA). `pos_weight` sozinho não resolvia isso de forma consistente — só o *residual learning* resolveu de vez, ao mudar o que o modelo aprende, não só como ele é penalizado.
 
 ### Limiar de "alto risco"
 
@@ -254,7 +264,7 @@ Documentar isso é proposital — decisões de engenharia real raramente são li
 - **Quatro ferramentas de ML distribuído bloqueadas pelo mesmo padrão**: `spark-excel` (biblioteca Maven, requer cluster não-serverless), `spark.conf.set` para Column Mapping (`CONFIG_NOT_AVAILABLE`), `SparkXGBRegressor` (`spark.task.cpus` indisponível), `TorchDistributor` em modo distribuído (`spark.master` indisponível). Confirma que é limitação de arquitetura do compute serverless do Databricks Free Edition, não falha pontual — motivou a decisão final de usar PyTorch puro (`toPandas()` + treino no driver) em vez de insistir em distribuição.
 - **`maxBins` do `GBTRegressor` insuficiente para colunas categóricas de alta cardinalidade** — corrigido calculando dinamicamente a partir da cardinalidade real de cada coluna.
 - **Bug de coluna duplicada no treino MLP**: a coluna usada como baseline (`media_movel_7d`) também é uma das features de entrada — selecioná-la duas vezes no Spark gerava uma coluna duplicada no Pandas, inflando silenciosamente o número de colunas do tensor de entrada e quebrando o `nn.Linear` (`mat1 and mat2 shapes cannot be multiplied`). Corrigido evitando a seleção duplicada.
-- **Classe desbalanceada quebrando o treino de classificação**: ver seção [Modelos de ML](#-modelos-de-ml) — `pos_weight` no `BCEWithLogitsLoss` resolveu.
+- **Classe desbalanceada quebrando o treino de classificação**: ver seção [Modelos de ML](#-modelos-de-ml) — `pos_weight` sozinho não resolveu de forma consistente; a solução real foi mudar a abordagem inteira para *residual learning*.
 - **MAPE quebra em série esparsa**: WAPE usado como alternativa mais robusta a zero-inflação.
 - **Indexador de categoria "solto" quebrando a inferência** (versão GBTRegressor, arquivada): corrigido nos notebooks históricos unificando tudo em `Pipeline` do Spark ML antes de migrar para a abordagem MLP.
 
